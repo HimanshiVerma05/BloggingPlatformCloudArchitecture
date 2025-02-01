@@ -92,19 +92,8 @@ S3 Lifecycle Policies: Moves infrequently accessed logs to cost-efficient storag
 
 Serverless Computing: Uses AWS Lambda for event-driven processes to minimize compute costs.
 
-Deliverables
 
-Technical Report
-
-Justification for AWS service selection.
-
-Architecture and Data Interaction Diagrams.
-
-Performance, cost, security, and scalability analysis.
-
-Public URL of the deployed application.
-
-Future Enhancements
+**Future Enhancements**
 
 Microservices Migration: Refactor monolithic backend into microservices using AWS Fargate or ECS.
 
