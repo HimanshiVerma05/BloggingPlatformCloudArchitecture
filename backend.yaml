@@ -1,0 +1,302 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Backend Application with ALB, Auto Scaling, SNS, Secrets Manager, and Lambda Integration
+
+Parameters:
+  KeyPairName:
+    Description: EC2 KeyPair for SSH access
+    Type: AWS::EC2::KeyPair::KeyName
+
+  InstanceType:
+    Description: Instance type for backend EC2
+    Type: String
+    Default: t3.micro
+
+  BackendSecurityGroup:
+    Description: Security group ID for backend EC2 instances
+    Type: AWS::EC2::SecurityGroup::Id
+
+  BackendALBSecurityGroupId:
+    Description: Security group ID for Application Load Balancer
+    Type: AWS::EC2::SecurityGroup::Id
+
+  DBInstanceEndpoint:
+    Description: Endpoint of the RDS instance
+    Type: String
+
+Resources:
+  # SNS Topic for Notifications
+  BloggingSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: BloggingPlatformNotifications
+      TopicName: BloggingNotifications
+
+  # BloggingNotificationLambda Function (using existing LabRole)
+  BloggingNotificationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: BloggingNotificationLambda
+      Handler: index.handler
+      Role: arn:aws:iam::567899316473:role/LabRole
+      Runtime: nodejs18.x
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const sns = new AWS.SNS();
+          exports.handler = async (event) => {
+            const params = {
+              Message: `New blog post created: ${event.blogTitle}`,
+              TopicArn: process.env.SNS_TOPIC_ARN,
+            };
+            await sns.publish(params).promise();
+            return { statusCode: 200, body: 'Notification sent' };
+          };
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref BloggingSNSTopic
+      Timeout: 100
+
+  # SecretsManagerLambda Function (using existing LabRole)
+  SecretsManagerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: SecretsManagerLambda
+      Handler: index.handler
+      Role: arn:aws:iam::567899316473:role/LabRole
+      Runtime: nodejs18.x
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+
+          exports.handler = async (event) => {
+            const secretsManager = new AWS.SecretsManager();
+            const secretArn = process.env.SECRET_ARN; // Secret ARN from environment variable
+
+            try {
+              const data = await secretsManager.getSecretValue({ SecretId: secretArn }).promise();
+              if ('SecretString' in data) {
+                const secrets = JSON.parse(data.SecretString);
+                return {
+                  statusCode: 200,
+                  body: JSON.stringify(secrets),
+                };
+              } else {
+                throw new Error('SecretString not found in the response');
+              }
+            } catch (err) {
+              console.error('Error retrieving secrets from Secrets Manager:', err);
+              return {
+                statusCode: 500,
+                body: JSON.stringify({ error: 'Failed to retrieve secrets' }),
+              };
+            }
+          };
+      Environment:
+        Variables:
+          SECRET_ARN: !ImportValue BloggingPlatformSecretsArn
+      Timeout: 100
+
+  # API Gateway to Invoke SecretsManagerLambda
+  SecretsManagerApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: SecretsManagerApi
+
+  SecretsManagerApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt SecretsManagerApi.RootResourceId
+      PathPart: secrets
+      RestApiId: !Ref SecretsManagerApi
+
+  SecretsManagerApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref SecretsManagerApi
+      ResourceId: !Ref SecretsManagerApiResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SecretsManagerLambda.Arn}/invocations'
+
+  # Permission for API Gateway to invoke Lambda
+  SecretsManagerLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SecretsManagerLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${SecretsManagerApi}/*/GET/secrets'
+
+  # Instance Profile using existing LabRole
+  BackendInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - LabRole
+
+  # Application Load Balancer
+  BackendLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: BackendALB
+      Scheme: internal
+      Subnets:
+        - !ImportValue BackendPrivateSubnet1
+        - !ImportValue BackendPrivateSubnet2
+      SecurityGroups:
+        - !Ref BackendALBSecurityGroupId
+      LoadBalancerAttributes:
+        - Key: access_logs.s3.enabled
+          Value: "true"
+        - Key: access_logs.s3.bucket
+          Value: bloggingapp-logs
+        - Key: access_logs.s3.prefix
+          Value: backend-alb-logs
+
+  BackendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: BackendTargetGroup
+      TargetType: instance
+      Port: 80
+      Protocol: HTTP
+      VpcId: !ImportValue BloggingAppVPC
+      HealthCheckPath: /api/health
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 10
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+
+  BackendListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref BackendLoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTargetGroup
+
+  # Launch Template for Backend EC2
+  BackendLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyPairName
+        SecurityGroupIds:
+          - !Ref BackendSecurityGroup
+        ImageId: !Sub "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2}}"
+        IamInstanceProfile:
+          Name: !Ref BackendInstanceProfile
+        UserData:
+          Fn::Base64: !Sub |
+              #!/bin/bash
+              yum update -y
+              yum install -y docker
+              service docker start
+              usermod -a -G docker ec2-user
+
+              # Configure CloudWatch Agent
+              cat <<EOF > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+              {
+                "logs": {
+                  "logs_collected": {
+                    "files": {
+                      "collect_list": [
+                        {
+                          "file_path": "/var/log/nginx/access.log",
+                          "log_group_name": "/backend/nginx/access",
+                          "log_stream_name": "{instance_id}"
+                        },
+                        {
+                          "file_path": "/var/log/nginx/error.log",
+                          "log_group_name": "/backend/nginx/error",
+                          "log_stream_name": "{instance_id}"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+              EOF
+
+              /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a start # <CHANGED> Start CloudWatch Agent
+
+              docker pull himanshiverma05/blogging-backend:latest
+              docker run -d -p 80:3000 himanshiverma05/blogging-backend:latest
+
+  # Auto Scaling Group
+  BackendAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !ImportValue BackendPrivateSubnet1
+        - !ImportValue BackendPrivateSubnet2
+      LaunchTemplate:
+        LaunchTemplateId: !Ref BackendLaunchTemplate
+        Version: !GetAtt BackendLaunchTemplate.LatestVersionNumber
+      MinSize: 2
+      MaxSize: 2
+      DesiredCapacity: 2
+      TargetGroupARNs:
+        - !Ref BackendTargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 3000
+  
+  # CloudWatch Alarm for High CPU Utilization # <CHANGED>
+  HighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: BackendHighCPUAlarm
+      AlarmDescription: Alarm when CPU utilization exceeds 80% on backend instances
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlarmSNS
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref BackendAutoScalingGroup
+  
+   # SNS Topic for Alarms # <CHANGED>
+  AlarmSNS:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: BackendAlarms
+      Subscription:
+        - Endpoint: iamtherockstar05@gmail.com
+          Protocol: email
+
+Outputs:
+  BackendLoadBalancerDNSName:
+    Description: DNS Name of the Backend ALB
+    Value: !GetAtt BackendLoadBalancer.DNSName
+    Export:
+      Name: BloggingAppBackendALBDNSName
+
+  BloggingSNSTopicArn:
+    Description: ARN of the Blogging SNS Topic
+    Value: !Ref BloggingSNSTopic
+    Export:
+      Name: BloggingAppSNSTopicArn
+
+  BackendAutoScalingGroupName:
+    Description: Auto Scaling Group Name for Backend
+    Value: !Ref BackendAutoScalingGroup
+    Export:
+      Name: BloggingAppBackendASGName
+
+  SecretsManagerApiEndpoint:
+    Description: API endpoint URL for the SecretsManagerLambda
+    Value: !Sub 'https://${SecretsManagerApi}.execute-api.${AWS::Region}.amazonaws.com/prod/secrets'

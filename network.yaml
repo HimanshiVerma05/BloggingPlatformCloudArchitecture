@@ -1,0 +1,399 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Networking Infrastructure for Blogging Application with Security Groups
+
+Parameters:
+  VpcCidr:
+    Description: CIDR block for the VPC
+    Type: String
+    Default: 10.0.0.0/16
+
+Resources:
+  # VPC
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: BloggingAppVPC
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: BloggingAppIGW
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Route Table and Routes
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PublicRouteTable
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # Subnets
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: PublicSubnet1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: us-east-1b
+      Tags:
+        - Key: Name
+          Value: PublicSubnet2
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  BackendPrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.3.0/24
+      #MapPublicIpOnLaunch: false
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: BackendPrivateSubnet1
+
+  BackendPrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.4.0/24
+      #MapPublicIpOnLaunch: false
+      AvailabilityZone: us-east-1b
+      Tags:
+        - Key: Name
+          Value: BackendPrivateSubnet2
+
+  DatabasePrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.5.0/24
+      AvailabilityZone: us-east-1a
+      Tags:
+        - Key: Name
+          Value: DatabasePrivateSubnet1
+
+  DatabasePrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.6.0/24
+      AvailabilityZone: us-east-1b
+      Tags:
+        - Key: Name
+          Value: DatabasePrivateSubnet2
+
+     # Route Table for Database Private Subnets
+  DatabasePrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: DatabasePrivateRouteTable
+
+  DatabasePrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DatabasePrivateSubnet1
+      RouteTableId: !Ref DatabasePrivateRouteTable
+
+  DatabasePrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DatabasePrivateSubnet2
+      RouteTableId: !Ref DatabasePrivateRouteTable
+
+  # NAT Gateways and EIPs
+  NATGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      AllocationId: !GetAtt NATGatewayEIP1.AllocationId
+      ConnectivityType: public
+      Tags:
+        - Key: Name
+          Value: NATGateway1
+
+  NATGatewayEIP1:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NATGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      AllocationId: !GetAtt NATGatewayEIP2.AllocationId
+      ConnectivityType: public
+      Tags:
+        - Key: Name
+          Value: NATGateway2
+
+  NATGatewayEIP2:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PrivateRouteTable1
+
+  PrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PrivateRouteTable2
+
+  PrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway2
+
+  BackendPrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref BackendPrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable1
+
+  BackendPrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref BackendPrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable2
+
+  # Security Groups
+  FrontendALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for frontend ALBs
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0  # Allow HTTP from anywhere
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0  # Allow HTTPS from anywhere
+      SecurityGroupEgress:
+        - IpProtocol: -1  # Allow all protocols
+          FromPort: 0     # Start port (all ports)
+          ToPort: 0       # End port (all ports)
+          CidrIp: 0.0.0.0/0  # Allow to any destination
+  
+  FrontendSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for frontend EC2 instances
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          #CidrIp: 0.0.0.0/0 
+          SourceSecurityGroupId: !Ref FrontendALBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          #CidrIp: 0.0.0.0/0 
+          SourceSecurityGroupId: !Ref FrontendALBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref FrontendALBSecurityGroup
+          #CidrIp: 0.0.0.0/0  
+      SecurityGroupEgress:
+        - IpProtocol: -1  # Allow all protocols
+          FromPort: 0     # Start port (all ports)
+          ToPort: 0       # End port (all ports)
+          CidrIp: 0.0.0.0/0  # Allow to any destination
+
+  BackendALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for backend load balancer
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          #CidrIp: 0.0.0.0/0
+          #CidrIp: 10.0.1.0/24
+          SourceSecurityGroupId: !Ref FrontendSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          #SourceSecurityGroupId: !Ref FrontendSecurityGroup
+          #CidrIp: 10.0.1.0/24  # Allow HTTPS traffic from PublicSubnet1
+
+  BackendSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: security group for backend instances
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          #CidrIp: 0.0.0.0/0
+          SourceSecurityGroupId: !Ref BackendALBSecurityGroup
+          #CidrIp: 10.0.3.0/24
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          #CidrIp: 0.0.0.0/0
+          SourceSecurityGroupId: !Ref BackendALBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref BackendALBSecurityGroup
+          #CidrIp: 0.0.0.0/0
+
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for RDS MySQL instance
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref BackendSecurityGroup
+
+Outputs:
+  BloggingAppVPC:
+    Description: VPC ID
+    Value: !Ref VPC
+    Export:
+      Name: BloggingAppVPC
+
+  PublicSubnet1:
+    Description: Public Subnet ID 1
+    Value: !Ref PublicSubnet1
+    Export:
+      Name: PublicSubnet1
+  
+  PublicSubnet2:
+    Description: Public Subnet ID 2
+    Value: !Ref PublicSubnet2
+    Export:
+      Name: PublicSubnet2
+
+  BackendPrivateSubnet1:
+    Description: Private Subnet ID 1
+    Value: !Ref BackendPrivateSubnet1
+    Export:
+      Name: BackendPrivateSubnet1
+  
+  BackendPrivateSubnet2:
+    Description: Private Subnet ID 2
+    Value: !Ref BackendPrivateSubnet2
+    Export:
+      Name: BackendPrivateSubnet2
+
+  FrontendSecurityGroupId:
+    Description: Security Group ID for Frontend
+    Value: !Ref FrontendSecurityGroup
+    Export:
+      Name: BloggingAppFrontendSecurityGroup
+
+  BackendSecurityGroupId:
+    Description: Security Group ID for Backend
+    Value: !Ref BackendSecurityGroup
+    Export:
+      Name: BloggingAppBackendSecurityGroup
+
+  FrontendALBSecurityGroupId:
+    Description: Security Group ID for frontend ALB
+    Value: !Ref FrontendALBSecurityGroup
+    Export:
+      Name: FrontendALBSecurityGroupId
+
+  BackendALBSecurityGroupId:
+    Description: Security Group ID for backend ALB
+    Value: !Ref BackendALBSecurityGroup
+    Export:
+      Name: BackendALBSecurityGroupId
+
+  RDSSecurityGroupId:
+    Description: Security Group ID for RDS
+    Value: !Ref RDSSecurityGroup
+    Export:
+      Name: BloggingAppRDSSecurityGroup
+  
+  DatabasePrivateSubnet1:
+    Description: Database Private Subnet ID 1
+    Value: !Ref DatabasePrivateSubnet1
+    Export:
+      Name: DatabasePrivateSubnet1
+  
+  DatabasePrivateSubnet2:
+    Description: Database Private Subnet ID 2
+    Value: !Ref DatabasePrivateSubnet2
+    Export:
+      Name: DatabasePrivateSubnet2

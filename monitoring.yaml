@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudWatch Dashboard for Blogging App - Monitors Frontend and Backend
+
+Resources:
+  BloggingAppDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: BloggingAppDashboard
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/EC2", "CPUUtilization", "AutoScalingGroupName", "${FrontendAutoScalingGroupName}" ]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "Frontend CPU Utilization"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/EC2", "CPUUtilization", "AutoScalingGroupName", "${BackendAutoScalingGroupName}" ]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "Backend CPU Utilization"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${FrontendALBName}" ]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}",
+                "title": "Frontend ALB Request Count"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "AWS/ApplicationELB", "RequestCount", "LoadBalancer", "${BackendALBName}" ]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}",
+                "title": "Backend ALB Request Count"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  DashboardName:
+    Description: Name of the CloudWatch Dashboard
+    Value: BloggingAppDashboard
+    Export:
+      Name: BloggingAppDashboardName
+
+Parameters:
+  FrontendAutoScalingGroupName:
+    Description: Auto Scaling Group Name for Frontend
+    Type: String
+    Default: !ImportValue FrontendAutoScalingGroupName # Import from frontend stack
+
+  BackendAutoScalingGroupName:
+    Description: Auto Scaling Group Name for Backend
+    Type: String
+    Default: !ImportValue BackendAutoScalingGroupName # Import from backend stack
+
+  FrontendALBName:
+    Description: Load Balancer Name for Frontend ALB
+    Type: String
+    Default: !ImportValue FrontendLoadBalancerDNSName # Import from frontend stack
+
+  BackendALBName:
+    Description: Load Balancer Name for Backend ALB
+    Type: String
+    Default: !ImportValue BackendLoadBalancerDNSName # Import from backend stack

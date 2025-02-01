@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Frontend Application with ALB, Auto Scaling Group, and Integration with Backend and Notifications
+
+Parameters:
+  BackendALBDNSName:
+    Description: DNS name of the Backend ALB
+    Type: String
+
+  NotificationApiEndpoint:
+    Description: API Gateway endpoint URL for the Notification Lambda
+    Type: String
+
+  KeyPairName:
+    Description: EC2 KeyPair for SSH access
+    Type: AWS::EC2::KeyPair::KeyName
+
+  InstanceType:
+    Description: Instance type for frontend EC2
+    Type: String
+    Default: t3.micro
+
+  FrontendSecurityGroup:
+    Description: Security group ID for frontend EC2 instances
+    Type: AWS::EC2::SecurityGroup::Id
+
+  FrontendALBSecurityGroup:
+    Description: Security group ID for Application Load Balancer
+    Type: AWS::EC2::SecurityGroup::Id
+
+Resources:
+  # Internet-Facing Application Load Balancer for Frontend
+  FrontendLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: FrontendALB
+      Scheme: internet-facing
+      Subnets:
+        - !ImportValue PublicSubnet1
+        - !ImportValue PublicSubnet2
+      SecurityGroups:
+        - !Ref FrontendALBSecurityGroup
+      LoadBalancerAttributes:
+        - Key: access_logs.s3.enabled
+          Value: "true"
+        - Key: access_logs.s3.bucket
+          Value: bloggingapp-logs
+        - Key: access_logs.s3.prefix
+          Value: frontend-alb-logs
+
+  FrontendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: FrontendTargetGroup
+      TargetType: instance
+      Port: 80
+      Protocol: HTTP
+      VpcId: !ImportValue BloggingAppVPC
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: 80
+      HealthCheckIntervalSeconds: 10
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200-399'
+
+  FrontendListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref FrontendLoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref FrontendTargetGroup
+
+  # Instance Profile using LabRole
+  FrontendInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - LabRole  
+
+  # Launch Template for Frontend EC2
+  FrontendLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyPairName
+        SecurityGroupIds:
+          - !Ref FrontendSecurityGroup
+        ImageId: !Sub "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2}}"
+        IamInstanceProfile:
+          Name: !Ref FrontendInstanceProfile
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install -y docker 
+            service docker start
+            usermod -a -G docker ec2-user
+
+             # Configure CloudWatch Agent
+            cat <<EOF > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+            {
+              "logs": {
+                "logs_collected": {
+                  "files": {
+                    "collect_list": [
+                      {
+                        "file_path": "/var/log/nginx/access.log",
+                        "log_group_name": "/nginx/access",
+                        "log_stream_name": "{instance_id}"
+                      },
+                      {
+                        "file_path": "/var/log/nginx/error.log",
+                        "log_group_name": "/nginx/error",
+                        "log_stream_name": "{instance_id}"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+            EOF
+            /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a start # <CHANGED> Start CloudWatch Agent
+
+         
+            # Pull and run the Docker image
+            docker pull himanshiverma05/blogging-frontend:latest
+            docker run -d -p 80:80 -e WDS_SOCKET_PORT=0 \
+              -e REACT_APP_API_URL=http://${BackendALBDNSName} \
+              -e REACT_APP_API_GATEWAY_URL=https://${NotificationApiEndpoint}.execute-api.${AWS::Region}.amazonaws.com/prod/notify \
+              himanshiverma05/blogging-frontend:latest
+  # Auto Scaling Group for Frontend
+  FrontendAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !ImportValue PublicSubnet1
+        - !ImportValue PublicSubnet2
+      LaunchTemplate:
+        LaunchTemplateId: !Ref FrontendLaunchTemplate
+        Version: !GetAtt FrontendLaunchTemplate.LatestVersionNumber
+      MinSize: 2
+      MaxSize: 2
+      DesiredCapacity: 2
+      TargetGroupARNs:
+        - !Ref FrontendTargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 3000
+
+   # CloudWatch Alarm for High CPU Utilization # <CHANGED> Added CloudWatch Alarm
+  HighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: HighCPUAlarm
+      AlarmDescription: Alarm when CPU utilization exceeds 80%
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref AlarmSNS
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref FrontendLaunchTemplate
+
+  # SNS Topic for Alarms # <CHANGED> Added SNS for notification
+  AlarmSNS:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: FrontendAlarms
+      Subscription:
+        - Endpoint: iamtherockstar05@gmail.com
+          Protocol: email
+
+Outputs:
+  FrontendLoadBalancerDNSName:
+    Description: DNS Name of the Frontend ALB
+    Value: !GetAtt FrontendLoadBalancer.DNSName
+    Export:
+      Name: FrontendLoadBalancerDNSName
+
+  FrontendAutoScalingGroupName:
+    Description: Auto Scaling Group Name for Frontend
+    Value: !Ref FrontendAutoScalingGroup
+    Export:
+      Name: FrontendAutoScalingGroupName

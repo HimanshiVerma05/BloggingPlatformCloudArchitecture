@@ -1,0 +1,81 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: RDS MySQL Setup for Blogging Application
+
+Parameters:
+  DBName:
+    Description: Database name
+    Type: String
+    Default: bloggingapp
+
+  DBUser:
+    Description: Database admin username
+    Type: String
+    Default: admin
+  
+  DBPassword:
+    Description: Database admin password
+    Type: String
+    Default: password
+
+  DBAllocatedStorage:
+    Description: Allocated storage for the RDS instance (GB)
+    Type: Number
+    Default: 20
+
+Resources:
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS
+      SubnetIds:
+        - !ImportValue DatabasePrivateSubnet1
+        - !ImportValue DatabasePrivateSubnet2
+      Tags:
+        - Key: Name
+          Value: BloggingAppDBSubnetGroup
+    
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: !Ref DBName
+      MasterUsername: !Ref DBUser
+      MasterUserPassword: !Ref DBPassword
+      DBInstanceClass: db.t3.micro
+      Engine: MySQL
+      AllocatedStorage: !Ref DBAllocatedStorage
+      #MultiAZ: true
+      StorageType: gp2
+      VPCSecurityGroups:
+        - !ImportValue BloggingAppRDSSecurityGroup
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      BackupRetentionPeriod: 1
+      PubliclyAccessible: false  
+  
+  # Secrets Manager for Database Credentials
+  BloggingPlatformSecrets:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: BloggingPlatformSecrets
+      Description: Secrets for Blogging Platform
+      SecretString: !Sub |
+        {
+          "DB_HOST": "${RDSInstance.Endpoint.Address}",
+          "DB_USER": "${DBUser}",
+          "DB_PASSWORD": "${DBPassword}",
+          "DB_NAME": "${DBName}",
+          "JWT_SECRET": "00c367c3027295756cd7f84c38fa212e1ce2732e1a460b8cc876e8bfc5b8283191c55f6d9fd87129499ff744044dd803d5e42b8430bc44e18ca14b1c8f101c0a",
+          "REGION": "${AWS::Region}"
+        }
+
+Outputs:
+  RDSInstanceEndpoint:
+    Description: Endpoint of the RDS instance
+    Value: !GetAtt RDSInstance.Endpoint.Address
+    Export:
+      Name: BloggingAppRDSInstanceEndpoint
+
+  BloggingPlatformSecretsArn:
+    Description: ARN of the Secrets Manager secret
+    Value: !Ref BloggingPlatformSecrets
+    Export:
+      Name: BloggingPlatformSecretsArn
